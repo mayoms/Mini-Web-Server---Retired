@@ -2,7 +2,8 @@ __author__ = 'micah'
 
 import socket
 import os
-import pprint
+import subprocess
+import re
 
 PATH = 'sites'
 
@@ -20,25 +21,32 @@ class WebServer(object):
 
 		self.ipaddr = ipaddr
 		self.port = port
-		self.sock = None
-		self.client = None
-		self.clientaddr = None
-		self.log = None
+		self.site_options = {}
+
+	def load_site_options(self):
+		try:
+			with open(os.path.join(PATH,'.siteoptions'),'r') as fh:
+				for line in fh.readlines():
+					if line.strip() and line[0] is not '#':
+						line = line.split()
+						self.site_options[line[0]] = line[1:]
+		except FileNotFoundError:
+			print('Site options not found.')
+			self.site_options['index'] = ('index.html','1')
 
 	def run_server(self):
-
-		self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-		self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-		self.sock.bind((self.ipaddr, self.port))
-		self.sock.listen(socket.SOMAXCONN)
+		sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+		sock.bind((self.ipaddr, self.port))
+		sock.listen(socket.SOMAXCONN)
 
 		while True:
-			self.client, self.addr = self.sock.accept()
-			data = self.client.recv(4096)
+			client, addr = sock.accept()
+			data = client.recv(4096)
 			if data:
-				self.client.sendall(bytes(self.http_response(data.decode('utf-8'))))
-			self.client.close()
-		self.socket.close()
+				client.sendall(bytes(self.http_response(data.decode('utf-8'))))
+			client.close()
+		socket.close()
 
 	def parse_header(self,request_header):
 		try:	
@@ -52,9 +60,22 @@ class WebServer(object):
 				if item:
 					item = item.split(':')
 					parsed_request['headers'][item[0]] = item[1]
+
 			return parsed_request
 		except (IndexError, KeyError):
 			return None
+
+	def parse_path(self,request_path):
+		parsed_path = {}
+		parsed_path['path'], parsed_path['resource'] = request_path.rsplit('/',1) 
+		if '?' in parsed_path['resource']:
+			#Problem is here
+			parsed_path['resource'], parsed_path['arguments'] = self.unquote(parsed_path['resource'].replace('+',' ')).split('?')
+		else:
+			parsed_path['arguments'] = None
+		return parsed_path
+
+
 
 	def http_response(self, http_request):
 
@@ -67,15 +88,53 @@ class WebServer(object):
 				return RESPONSE_CODES['200']
 			return RESPONSE_CODES['501']
 		return RESPONSE_CODES['401']
-		print("Sending 401")
 
 
-	def fetch_resource(self, path):
-		try: 
-			with open(os.path.join(PATH+path,'index.html'), 'rb') as fh:
-				return RESPONSE_CODES['200'] + fh.read()
+	def fetch_resource(self, request_path):
+		resource_data = None
+		if request_path == '/':
+			self.load_site_options()
+			print(self.site_options)
+			if self.site_options:
+				if self.site_options['index'][1] == '0':
+					resource_data = self.run_script(request_path, self.site_options['index'][0])
+				else:
+					resource_data = self.load_document(request_path, self.site_options['index'][0])
+		else:
+			request_path = self.parse_path(request_path)
+			print(request_path)
+			if '.htm' in request_path['resource'][-5:]:
+				resource_data = self.load_document(request_path['path'], request_path['resource'])
+			else:
+				resource_data = self.run_script(request_path['path'], request_path['resource'], arguments=request_path['arguments'])
+		if resource_data:
+			return RESPONSE_CODES['200'] + resource_data
+		return RESPONSE_CODES['404']
+
+
+	def load_document(self, request_path, document):
+		try:
+			with open(os.path.join(PATH + request_path, document),'rb') as fh:
+				return fh.read()
 		except FileNotFoundError:
-			return RESPONSE_CODES['404']
+			return None
+
+	def run_script(self, request_path, document, arguments = None):
+		# if not self.site_options and request_path != 'cgi-bin':
+		# 	return None
+		print(request_path, document)
+		requested_resource = [os.path.join(PATH, request_path, document)]
+		if arguments:
+			requested_resource.extend(arguments)
+		try:
+			process = subprocess.Popen(requested_resource, stdout=subprocess.PIPE)
+			resource_data, err = process.communicate()
+			return resource_data
+		except FileNotFoundError:
+			return None
+	
+	def unquote(self, url):
+  		return re.compile('%([0-9a-fA-F]{2})',re.M).sub(lambda m: chr(int(m.group(1),16)), url)
 
 def main():
 	webserver = WebServer('0.0.0.0', 3000)
