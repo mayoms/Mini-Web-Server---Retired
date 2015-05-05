@@ -21,29 +21,33 @@ class WebServer(object):
 
 		self.ipaddr = ipaddr
 		self.port = port
-		self.site_options = {}
+		self.index = {}
 
 	def load_site_options(self):
 		try:
 			with open(os.path.join(PATH,'.siteoptions'),'r') as fh:
 				for line in fh.readlines():
 					if line.strip() and line[0] is not '#':
-						line = line.split()
-						self.site_options[line[0]] = line[1:]
+						line = line[:-1].split(';')
+						print(line)
+						self.index[line[0]] = line[1]
 		except FileNotFoundError:
 			print('Site options not found.')
-			self.site_options['index'] = ('index.html','1')
+			self.index['path'] = '/'
+			self.index['resource'] = 'index.html'
 
 	def run_server(self):
 		sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
 		sock.bind((self.ipaddr, self.port))
 		sock.listen(socket.SOMAXCONN)
+		self.load_site_options()
 
 		while True:
 			client, addr = sock.accept()
 			data = client.recv(4096)
 			if data:
+				print(data.decode('utf-8'))
 				client.sendall(bytes(self.http_response(data.decode('utf-8'))))
 			client.close()
 		socket.close()
@@ -66,15 +70,9 @@ class WebServer(object):
 			return None
 
 	def parse_path(self,request_path):
-		parsed_path = {}
-		parsed_path['path'], parsed_path['resource'] = request_path.rsplit('/',1) 
-		if '?' in parsed_path['resource']:
-			#Problem is here
-			parsed_path['resource'], parsed_path['arguments'] = self.unquote(parsed_path['resource'].replace('+',' ')).split('?')
-		else:
-			parsed_path['arguments'] = None
-		return parsed_path
-
+		if request_path[1:]:
+				return '/'.join([PATH, self.unquote(request_path[1:].replace('+',' '))])
+		return "/".join([PATH, self.index['path'],self.index['resource']])
 
 
 	def http_response(self, http_request):
@@ -91,50 +89,36 @@ class WebServer(object):
 
 
 	def fetch_resource(self, request_path):
-		resource_data = None
-		if request_path == '/':
-			self.load_site_options()
-			print(self.site_options)
-			if self.site_options:
-				if self.site_options['index'][1] == '0':
-					resource_data = self.run_script(request_path, self.site_options['index'][0])
-				else:
-					resource_data = self.load_document(request_path, self.site_options['index'][0])
+		resource = self.parse_path(request_path)
+		print(resource)
+		if '.htm' in resource[-5:]:
+			resource_data = self.load_document(resource)
 		else:
-			request_path = self.parse_path(request_path)
-			print(request_path)
-			if '.htm' in request_path['resource'][-5:]:
-				resource_data = self.load_document(request_path['path'], request_path['resource'])
-			else:
-				resource_data = self.run_script(request_path['path'], request_path['resource'], arguments=request_path['arguments'])
+			resource_data = self.run_script(resource.split('?',1))
 		if resource_data:
 			return RESPONSE_CODES['200'] + resource_data
 		return RESPONSE_CODES['404']
 
 
-	def load_document(self, request_path, document):
+	def load_document(self, resource):
 		try:
-			with open(os.path.join(PATH + request_path, document),'rb') as fh:
+			with open(resource,'rb') as fh:
 				return fh.read()
 		except FileNotFoundError:
 			return None
 
-	def run_script(self, request_path, document, arguments = None):
-		# if not self.site_options and request_path != 'cgi-bin':
-		# 	return None
-		print(request_path, document)
-		requested_resource = [os.path.join(PATH, request_path, document)]
-		if arguments:
-			requested_resource.extend(arguments)
+	def run_script(self, resource):
 		try:
-			process = subprocess.Popen(requested_resource, stdout=subprocess.PIPE)
+			process = subprocess.Popen(resource, stdout=subprocess.PIPE)
 			resource_data, err = process.communicate()
+			print(resource_data)
 			return resource_data
 		except FileNotFoundError:
 			return None
 	
 	def unquote(self, url):
   		return re.compile('%([0-9a-fA-F]{2})',re.M).sub(lambda m: chr(int(m.group(1),16)), url)
+
 
 def main():
 	webserver = WebServer('0.0.0.0', 3000)
