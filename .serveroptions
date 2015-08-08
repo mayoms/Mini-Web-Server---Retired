@@ -1,0 +1,7 @@
+# Site options lets you specify behavior for the web server. Currently there  
+# is only one option, index, which tells the server what the produce when a   
+# request for a resource is made. Syntax: index <resource> 
+# handling. 0 means that the resource is an executable script, 1 is a browser readable document.
+
+webroot;sites
+df_idx;cgi-bin/weatherwebapp.py

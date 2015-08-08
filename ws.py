@@ -6,7 +6,6 @@ import subprocess
 import mimetypes
 import re
 
-
 class HTTPServer(object):
 
     def __init__(self, ipaddr, port):
@@ -14,30 +13,42 @@ class HTTPServer(object):
         self.ipaddr = ipaddr
         self.port = port
         self.srv_options = {}
-        self.request_header = None
-        self.supported_requests = ('GET', 'POST')
+        self.parsed_header = None
         self.RESPONSE_CODES = {
 
-            '200': b"HTTP/1.1 200 OK\r\nServer: My Little Server\r\n",
+            '200': b"HTTP/1.1 200 OK\r\nServer: My Little Server\r\n\
+                Content-Type:text/html; charset=utf-8\r\n\n",
             '404': b"HTTP/1.1 404 Not Found\r\n\n404 Page Not Found",
             '301': b"HTTP/1.1 301 Redirect\r\nLocation: ",
-            '501': b"HTTP/1.1 501 Not Implemented\r\n\n501 Not Implemented Yet",
-            '400': b"HTTP/1.1 400 Bad Request\r\n\n400 Unable to Parse Header"
+            '501': b"HTTP/1.1 501 Not Implemented\r\n\nNot Implemented Yet",
+            '400': b"HTTP/1.1 400 Bad Request\r\n\nUnable to Parse Header"
         }
+
+    def load_site_options(self):
+        try:
+            with open('.serveroptions', 'r') as fh:
+                for line in fh.readlines():
+                    if line.strip() and line[0] is not '#':
+                        line = line[:-1].split(';')
+                        self.srv_options[line[0]] = line[1]
+        except FileNotFoundError:
+            print('Site options not found.')
+            self.srv_options['webroot'] = 'sites'
+            self.srv_options['df_idx'] = 'index.html'
 
     def run_server(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((self.ipaddr, self.port))
         sock.listen(socket.SOMAXCONN)
-        #self.load_site_options()
+        self.load_site_options()
         print('Serving HTTP at {} port {}'.format(self.ipaddr, self.port))
         print('Site Index {}'.format('/'.join([self.srv_options['webroot'],
-                                              self.srv_options['df_idx']])))
+                                     self.srv_options['df_idx']])))
         while True:
             client, addr = sock.accept()
             data = client.recv(4096)
-            print(data.decode('utf-8'))
+            print(data)
             if data:
                 client.sendall(self.http_response(data))
             client.close()
@@ -45,14 +56,21 @@ class HTTPServer(object):
 
     def http_response(self, http_request):
 
-        self.request_header = RequestParser(http_request.decode('utf-8'))\
-            .parse_header()
-        if self.request_header:
-            if self.request_header['method'] in self.supported_requests:
-                page = ResourceObject(self.request_header).return_resource()
+        self.parsed_header = RequestParser(http_request.decode
+                                          ('utf-8')).parse_header()
+        if self.parsed_header:
+            if not self.parsed_header['path'][1:]:
+                self.parsed_header['path'] = self.srv_options['df_idx']
+            if self.parsed_header['method'] == 'GET':
+                page = ResourceObject('/'.join([self.srv_options['webroot'],
+                                      self.parsed_header['path']])
+                                      ).return_resource()
                 if page:
                     return self.RESPONSE_CODES['200'] + page
-                return self.RESPONSE_CODES['404']
+                else:
+                    return self.RESPONSE_CODES['404']
+            if self.parsed_header['method'] == 'HEAD':
+                return self.RESPONSE_CODES['200']
             return self.RESPONSE_CODES['501']
         return self.RESPONSE_CODES['400']
 
@@ -66,23 +84,11 @@ class RequestParser(object):
         try:
             parsed_header = {}
             self.header = self.header.split('\r\n')
-
             parsed_header['method'], parsed_header['path'], \
                 parsed_header['protocol'] = self.header[0].split(' ')
-
-            if parsed_header['method'] == 'POST':
-                parsed_header['arguments'] = self.header.pop()
-            elif '?' in parsed_header['path']:
-                parsed_header['path'], parsed_header['arguments']\
-                    = parsed_header['path'].split('?')
-
-            if parsed_header['arguments']:
-                parsed_header['arguments'] = self.uri_decode(parsed_header
-                                                             ['arguments'])
-
+            parsed_header['path'] = self.uri_decode(parsed_header['path'])
             if parsed_header['path'][1:] and parsed_header['path'][:-1] == '/':
                 parsed_header['path'] += 'index.html'
-
             for item in self.header[1:]:
                 if item:
                     item = item.split(':')
@@ -92,8 +98,9 @@ class RequestParser(object):
             return None
 
     def uri_decode(self, url):
-        url = re.compile('%([0-9a-fA-F]{2})', re.M).\
-            sub(lambda m: chr(int(m.group(1), 16)), url)
+        url = re.compile('%([0-9a-fA-F]{2})', re.M)\
+            .sub(lambda m: chr(int(m.group(1), 16)), url)
+        url = url.replace('?', ' ')
         url = url.replace('+', ' ')
         return url
 
@@ -104,9 +111,9 @@ class ResourceObject(object):
         self.script_types = ('.py', '.py3')
 
     def return_resource(self):
-        if self.requested_resource[self.requested_resource.
-            rfind('.'):self.requested_resource.find('.')+3]\
-                in self.script_types:
+        if self.requested_resource[self.requested_resource.rfind('.'):
+                                   self.requested_resource.find('.')+3
+                                   ] in self.script_types:
             self.run_script()
         else:
             self.load_document()
@@ -116,12 +123,7 @@ class ResourceObject(object):
         print('Serving: ' + self.requested_resource)
         try:
             with open(self.requested_resource, 'rb') as fh:
-                mimetype = bytes(mimetypes.guess_type(self.requested_resource)
-                                 [0].encode('utf-8'))
-                self.requested_resource = b'Content-Type: '\
-                    + mimetype + b'\r\n\r\n'
-                print(self.requested_resource)
-                self.requested_resource += fh.read()
+                self.requested_resource = fh.read()
         except FileNotFoundError:
             print(self.requested_resource + ' not found.')
             self.requested_resource = None
